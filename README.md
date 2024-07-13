@@ -1,4 +1,4 @@
-# Project Title: Unhooked PE Executor Pure Reflective Loader
+# Unhooked PE Executor Pure Reflective Loader
 
 ## Overview
 
