@@ -15,9 +15,6 @@ This project implements the **Unhooked PE Executor Pure Reflective Loader**, a c
 - **Base Relocation**: Applies base relocations to ensure the loaded PE file can be correctly executed at its allocated base address.
 - **Full Implementation of LoadLibrary & GetProcAddress**: Provides a complete manual implementation of these functions to avoid using potentially hooked system calls.
 
-## Achievements
-
-- Successfully ran Mimikatz on an endpoint with EDR using the Unhooked PE Executor Pure Reflective Loader, demonstrating its effectiveness in avoiding EDR hooks.
 
 ## Usage
 
