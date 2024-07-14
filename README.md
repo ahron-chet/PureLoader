@@ -1,8 +1,8 @@
-# Unhooked PE Executor Pure Reflective Loader
+# Anti-Hook PE Loader
 
 ## Overview
 
-This project implements the **Unhooked PE Executor Pure Reflective Loader**, a custom solution for manually parsing a PE file and resolving all its DLLs in the Import Address Table (IAT) by directly parsing them from the Export Address Table (EAT) recursively (parsing also the dependencies of the dependencies to avoid any call to `LoadLibrary` and `GetProcAddress`). Unlike traditional reflective DLL loaders or PE loaders that use `LoadLibrary` and `GetProcAddress` to resolve IATs, which can be intercepted and hooked by EDRs solutions, this loader performs all operations manually to avoid EDR hooks.
+This project implements the **Anti-Hook PE Loader**, a custom solution for manually parsing a PE file and resolving all its DLLs in the Import Address Table (IAT) by directly parsing them from the Export Address Table (EAT) recursively (parsing also the dependencies of the dependencies to avoid any call to `LoadLibrary` and `GetProcAddress`). Unlike traditional reflective DLL loaders or PE loaders that use `LoadLibrary` and `GetProcAddress` to resolve IATs, which can be intercepted and hooked by EDRs solutions, this loader performs all operations manually to avoid EDR hooks.
 
 
 ## Key Features
