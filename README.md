@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project implements the **Anti-Hook PE Loader**, a custom solution for manually parsing a PE file and resolving all its DLLs in the Import Address Table (IAT) by directly parsing them from the Export Address Table (EAT) recursively (parsing also the dependencies of the dependencies to avoid any call to `LoadLibrary` and `GetProcAddress`). Unlike traditional reflective DLL loaders or PE loaders that use `LoadLibrary` and `GetProcAddress` to resolve IATs, which can be intercepted and hooked by EDRs solutions, this loader performs all operations manually to avoid EDR hooks.
+PureLoader is a PE Loader with an EDR anti-hooking capability. It does so by manually parsing a PE file and resolving all DLLs in its Import Address Table (IAT) by directly parsing them from the Export Address Table (EAT) recursively (parsing also the dependencies of the dependencies to avoid any call to `LoadLibrary` and `GetProcAddress`). Unlike traditional reflective DLL loaders or PE loaders that use `LoadLibrary` and `GetProcAddress` to resolve IATs, which can be intercepted and hooked by EDRs solutions, this loader performs all operations manually to avoid EDR hooks.
 
 
 ## Key Features
@@ -22,7 +22,7 @@ This project implements the **Anti-Hook PE Loader**, a custom solution for manua
 
 1. **Compile the project** using your preferred C++ compiler.
 2. **Run the executable** with the desired PE file as an argument. Use the `--debug` flag for detailed debugging output.
-```
+```powershell
 PureLoader.exe --pe <PE path> [--debug]
 ```
 
