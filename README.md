@@ -2,7 +2,7 @@
 
 ## Overview
 
-PureLoader is a PE Loader with an EDR anti-hooking capability. It does so by loading a PE, resolving its DLL dependencies through recursive parsing, parsing the EAT, and updating the IAT of the loaded PE with unhooked functions. This allows running known and signed tools, such as Mimikatz, in-memory. Unlike traditional reflective PE loaders that use `LoadLibrary` and `GetProcAddress` to resolve IATs, which can be intercepted and hooked by EDRs solutions, PureLoader performs all operations manually to avoid EDR hooks.
+PureLoader is a PE Loader with an EDR anti-hooking capability. It does so by loading a PE, resolving its DLL dependencies through recursive parsing, calculating function pointers from the EAT, and updating the IAT of the loaded PE with unhooked functions. This allows running known and signed tools, such as Mimikatz, in-memory. Unlike traditional reflective PE loaders that use `LoadLibrary` and `GetProcAddress` to resolve IATs, PureLoader avoids EDR hooks by using custom  implementations of `LoadLibrary` and `GetProcAddress`.
 
 
 ## Key Features
