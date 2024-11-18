@@ -1,18 +1,16 @@
 #include <iostream>
 #include <fstream>
 #include <cstdlib>
-#include "windows.h"
 #include <map>
 #include <set>
 #include <vector>
 #include <sstream>
 #include <algorithm>
 #include <cstdio>
-
-
+#include <memory>
+#include <windows.h>
 
 using runnDllMain = BOOL(WINAPI*)(HINSTANCE dll, DWORD reason, LPVOID reserved);
-
 
 struct PE_BASE_INFO {
     std::string fullpath;
@@ -21,55 +19,45 @@ struct PE_BASE_INFO {
     std::map<std::string, FARPROC> functions;
 };
 
-
-
-
-std::map<std::string, PE_BASE_INFO*> loadedDlls;
-std::set <std::string> readedDlls;
-
-
-
-std::ostream* debugout;
-
-class NullBuffer : public std::streambuf {
-public:
-    int overflow(int c) { return c; }
+struct LoaderContext {
+    std::map<std::string, std::unique_ptr<PE_BASE_INFO>> loadedDlls;
+    std::set<std::string> readedDlls;
 };
 
+std::ostream* debugout = nullptr;
 
-class NullStream : public std::ostream {
-public:
-    NullStream() : std::ostream(&nullBuffer) {}
-private:
-    NullBuffer nullBuffer;
-};
-
-
+void DebugLog(const std::string& message) {
+    if (debugout) {
+        (*debugout) << message << std::endl;
+    }
+}
 
 void stringToLower(std::string& str) {
     std::transform(str.begin(), str.end(), str.begin(), [](unsigned char c) { return std::tolower(c); });
 }
 
-
 PVOID readFile(const char* filename, size_t* fileSize) {
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
-    if (!file) return nullptr;
+    if (!file) {
+        return nullptr;
+    }
 
     *fileSize = file.tellg();
     void* buffer = std::malloc(*fileSize);
-    if (!buffer) return nullptr;
+    if (!buffer) {
+        return nullptr;
+    }
 
     file.seekg(0, std::ios::beg);
-    file.read(static_cast<char*>(buffer), *fileSize);
+    file.read((char*)buffer, *fileSize);
     file.close();
-
     return buffer;
 }
 
-PE_BASE_INFO* findDllInfoByPath(const std::string& path) {
-    for (const auto& pair : loadedDlls) {
+PE_BASE_INFO* findDllInfoByPath(const std::string& path, LoaderContext* context) {
+    for (const auto& pair : context->loadedDlls) {
         if (pair.second->fullpath == path) {
-            return pair.second;
+            return pair.second.get();
         }
     }
     return nullptr;
@@ -94,10 +82,8 @@ std::string GetFullPathForDll(const std::string& dllName) {
     return path;
 }
 
-
 PVOID GetFixedBaseAddress(PIMAGE_NT_HEADERS64 pNTHeaders) {
-    *debugout << "Size Of image: " << std::hex << pNTHeaders->OptionalHeader.SizeOfImage << "\n";
-
+    DebugLog("Size Of image: " + std::to_string(pNTHeaders->OptionalHeader.SizeOfImage));
     return VirtualAlloc(0, pNTHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 }
 
@@ -106,41 +92,37 @@ void GetHeaders(PVOID pDllfile, PIMAGE_DOS_HEADER* pDOSHeader, PIMAGE_NT_HEADERS
     *pNTHeaders = (PIMAGE_NT_HEADERS64)((LPBYTE)pDllfile + (*pDOSHeader)->e_lfanew);
 }
 
-
 void WriteHeaders(PVOID pDllfile, PVOID baseAddress, PIMAGE_NT_HEADERS64 pNTHeaders) {
-    *debugout << "Size of headers: " << std::hex << pNTHeaders->OptionalHeader.SizeOfHeaders << "\n";
-    memcpy(baseAddress, pDllfile, pNTHeaders->OptionalHeader.SizeOfHeaders);
+    DebugLog("Size of headers: " + std::to_string(pNTHeaders->OptionalHeader.SizeOfHeaders));
+    std::memcpy(baseAddress, pDllfile, pNTHeaders->OptionalHeader.SizeOfHeaders);
 }
 
-
-
 void WriteSections(PVOID baseAddress, PVOID pDllfile, PIMAGE_DOS_HEADER pDOSHeader, PIMAGE_NT_HEADERS64 pNTHeaders) {
-
     for (int i = 0; i < pNTHeaders->FileHeader.NumberOfSections; i++) {
         PIMAGE_SECTION_HEADER pSectionHeader =
             (PIMAGE_SECTION_HEADER)((LPBYTE)baseAddress + pDOSHeader->e_lfanew + sizeof(IMAGE_NT_HEADERS64)
                 + (i * sizeof(IMAGE_SECTION_HEADER)));
 
-        *debugout << pSectionHeader->Name << "\n";
-        *debugout << "Virtual Address: " << std::hex << pSectionHeader->VirtualAddress << "\n";
-        *debugout << "Raw offset: " << std::hex << pSectionHeader->PointerToRawData << "\n";
-        *debugout << "Size of raw data: " << std::hex << pSectionHeader->SizeOfRawData << "\n";
-        *debugout << "Virtual Size: " << std::hex << pSectionHeader->Misc.VirtualSize << "\n";
+        DebugLog(std::string((char*)pSectionHeader->Name));
+        DebugLog("Virtual Address: " + std::to_string(pSectionHeader->VirtualAddress));
+        DebugLog("Raw offset: " + std::to_string(pSectionHeader->PointerToRawData));
+        DebugLog("Size of raw data: " + std::to_string(pSectionHeader->SizeOfRawData));
+        DebugLog("Virtual Size: " + std::to_string(pSectionHeader->Misc.VirtualSize));
+
         if (pSectionHeader->SizeOfRawData > 0) {
-            *debugout << "Writing section to: " << std::hex << (PVOID)((LPBYTE)baseAddress + pSectionHeader->VirtualAddress) << "\n";
-            memcpy((PVOID)((LPBYTE)baseAddress + pSectionHeader->VirtualAddress),
+            DebugLog("Writing section to: " + std::to_string((uintptr_t)((PVOID)((LPBYTE)baseAddress + pSectionHeader->VirtualAddress))));
+            std::memcpy((PVOID)((LPBYTE)baseAddress + pSectionHeader->VirtualAddress),
                 (PVOID)((LPBYTE)pDllfile + pSectionHeader->PointerToRawData),
                 pSectionHeader->SizeOfRawData);
-
         }
-        *debugout << "\n";
+        DebugLog("");
     }
 }
 
-FARPROC getFunctionAddress(const std::string& dllNameStr, const std::string& funcNameStr) {
-    auto dllIt = loadedDlls.find(dllNameStr);
-    if (dllIt != loadedDlls.end()) {
-        PE_BASE_INFO* dllInfo = dllIt->second;
+FARPROC getFunctionAddress(const std::string& dllNameStr, const std::string& funcNameStr, LoaderContext* context) {
+    auto dllIt = context->loadedDlls.find(dllNameStr);
+    if (dllIt != context->loadedDlls.end()) {
+        PE_BASE_INFO* dllInfo = dllIt->second.get();
         auto funcIt = dllInfo->functions.find(funcNameStr);
         if (funcIt != dllInfo->functions.end()) {
             return funcIt->second;
@@ -149,14 +131,12 @@ FARPROC getFunctionAddress(const std::string& dllNameStr, const std::string& fun
     return nullptr;
 }
 
-
-
-bool FixImports(PIMAGE_NT_HEADERS64 pNTHeaders, PVOID baseAddress, bool isinitial) {
+bool FixImports(PIMAGE_NT_HEADERS64 pNTHeaders, PVOID baseAddress, bool rec, LoaderContext* context) {
     if (pNTHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size > 0) {
         PVOID importPtr = (PVOID)((LPBYTE)baseAddress + pNTHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
         IMAGE_IMPORT_DESCRIPTOR ImportDesc = *(IMAGE_IMPORT_DESCRIPTOR*)importPtr;
         while (ImportDesc.Name != 0) {
-            char* dllName = (char*)((PVOID)((LPBYTE)baseAddress + ImportDesc.Name));
+            char* dllName = (char*)((LPBYTE)baseAddress + ImportDesc.Name);
             std::string dllNameStr(dllName);
 
             PVOID pOft = (PVOID)((LPBYTE)baseAddress + ImportDesc.OriginalFirstThunk);
@@ -166,83 +146,71 @@ bool FixImports(PIMAGE_NT_HEADERS64 pNTHeaders, PVOID baseAddress, bool isinitia
                 LPBYTE pNameAddress = (LPBYTE)baseAddress + thunk.u1.AddressOfData;
                 char* funcName = (char*)(pNameAddress + 2);
                 std::string funcNamestr(funcName);
-                *debugout << "  Function name: " << funcNamestr << "\n";
+                DebugLog("  Function name: " + funcNamestr);
+
                 FARPROC functionAddress;
-                if (isinitial) {
+                if (rec) {
                     functionAddress = GetProcAddress(LoadLibraryA(dllNameStr.c_str()), funcNamestr.c_str());
                 }
                 else {
-                    functionAddress = getFunctionAddress(dllNameStr, funcNamestr);
+                    functionAddress = getFunctionAddress(dllNameStr, funcNamestr, context);
                 }
 
                 if (functionAddress) {
-                    *debugout << "      Function Address: " << std::hex << functionAddress << "\n";
+                    DebugLog("      Function Address: " + std::to_string((uintptr_t)functionAddress));
                     *(FARPROC*)pfirstthunk = functionAddress;
                 }
                 else {
-                    std::cerr << "Unable to loacte function: " << funcNamestr << " in cutome mapped functions\n";
+                    std::cerr << "Unable to locate function: " << funcNamestr << " in custom mapped functions\n";
                     exit(12);
-                    return FALSE;
+                    return false;
                 }
-                pfirstthunk = (PVOID)(((LPBYTE)pfirstthunk) + 8);
-                pOft = (PVOID)(((LPBYTE)pOft) + sizeof(IMAGE_THUNK_DATA64));
+                pfirstthunk = (PVOID)((LPBYTE)pfirstthunk + sizeof(void*));
+                pOft = (PVOID)((LPBYTE)pOft + sizeof(IMAGE_THUNK_DATA64));
                 thunk = *(IMAGE_THUNK_DATA64*)pOft;
             }
-
             importPtr = (PVOID)((LPBYTE)importPtr + sizeof(IMAGE_IMPORT_DESCRIPTOR));
             ImportDesc = *(IMAGE_IMPORT_DESCRIPTOR*)importPtr;
         }
     }
-    return TRUE;
+    return true;
 }
 
+void ResolveDependencies(const std::string& dllName, PVOID pPefile, bool rec, LoaderContext* context) {
+    DebugLog("Resolving dependencies for: " + dllName);
 
-
-void ResolveDependencies(const std::string& dllName, const std::string test, PVOID pPefile) {
-    *debugout << test << "\n";
-
-    *debugout << "Resolving dependencies for: " << dllName << "\n";
-
-    if (loadedDlls.find(dllName) != loadedDlls.end()) {
-        *debugout << "Already resolved: " << dllName << "\n\n\n";
+    if (context->loadedDlls.find(dllName) != context->loadedDlls.end()) {
         return;
     }
 
-
     const std::string dllPath = GetFullPathForDll(dllName);
-    PE_BASE_INFO* foundDllInfo = findDllInfoByPath(dllPath);
+    PE_BASE_INFO* foundDllInfo = findDllInfoByPath(dllPath, context);
     if (foundDllInfo != nullptr) {
-        *debugout << "Dll Was alredy loaded by is path: " << dllPath << " updating name: " << dllName << "\n";
-        loadedDlls[dllName] = foundDllInfo;
+        context->loadedDlls[dllName] = std::make_unique<PE_BASE_INFO>(*foundDllInfo);
         return;
     }
 
     PVOID pDllfile;
     if (pPefile == nullptr) {
-        *debugout << "Reading data for :" << dllPath << "\n";
+        DebugLog("Reading data for :" + dllPath);
         size_t fileSize;
         pDllfile = readFile(dllPath.c_str(), &fileSize);
-        *debugout << "Successfully read DLL: " << dllPath << ", Size: " << fileSize << " bytes" << "\n";
+        DebugLog("Successfully read DLL: " + dllPath + ", Size: " + std::to_string(fileSize) + " bytes");
         if (!pDllfile) {
             std::cerr << "Failed to read the DLL: " << dllPath << "\n";
             return;
         }
     }
-    else
-    {
+    else {
         pDllfile = pPefile;
     }
-
 
     PIMAGE_DOS_HEADER pDOSHeader;
     PIMAGE_NT_HEADERS64 pNTHeaders;
     GetHeaders(pDllfile, &pDOSHeader, &pNTHeaders);
-    if (pNTHeaders->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64) {
-        std::cerr << dllPath << " is not x64" << "\n";
-    }
 
     PVOID baseAddress = GetFixedBaseAddress(pNTHeaders);
-    *debugout << "Allocated base address: " << baseAddress << " for DLL: " << dllPath << "\n";
+    DebugLog("Allocated base address: " + std::to_string((uintptr_t)baseAddress) + " for DLL: " + dllPath);
 
     WriteHeaders(pDllfile, baseAddress, pNTHeaders);
     WriteSections(baseAddress, pDllfile, pDOSHeader, pNTHeaders);
@@ -255,71 +223,61 @@ void ResolveDependencies(const std::string& dllName, const std::string test, PVO
         return;
     }
 
-
-    PE_BASE_INFO* dllInfo = new PE_BASE_INFO();
+    auto dllInfo = std::make_unique<PE_BASE_INFO>();
     dllInfo->baseAddress = baseAddress;
     dllInfo->pNtHeaders = pNTHeaders;
     dllInfo->fullpath = dllPath;
-    loadedDlls[dllName] = dllInfo;
-
+    context->loadedDlls[dllName] = std::move(dllInfo);
 
     if (pNTHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size > 0) {
         PVOID importPtr = (PVOID)((LPBYTE)baseAddress + pNTHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
         IMAGE_IMPORT_DESCRIPTOR ImportDesc = *(IMAGE_IMPORT_DESCRIPTOR*)importPtr;
 
         while (ImportDesc.Name != 0) {
-            char* dllName = (char*)((PVOID)((LPBYTE)baseAddress + ImportDesc.Name));
-            std::string fullPath = GetFullPathForDll(dllName);
+            char* importedDllName = (char*)((LPBYTE)baseAddress + ImportDesc.Name);
+            std::string fullPath = GetFullPathForDll(importedDllName);
 
             if (fullPath.empty()) {
-                std::cerr << "Skipping API set DLL: " << dllName << "\n";
+                std::cerr << "Skipping API set DLL: " << importedDllName << "\n";
                 std::free(pDllfile);
                 return;
             }
             else {
-                *debugout << "Found imported DLL: " << dllName << ", Full path: " << fullPath << "\n";
-                std::stringstream ss;
-                ss << "Recorsion called from the dll " << dllInfo->fullpath << " to " << dllName << "\n";
-                ResolveDependencies(dllName, ss.str(), nullptr);
+                DebugLog("Found imported DLL: " + std::string(importedDllName) + ", Full path: " + fullPath);
+                if (rec) {
+                    ResolveDependencies(importedDllName, nullptr, true, context);
+                }
             }
             importPtr = (PVOID)((LPBYTE)importPtr + sizeof(IMAGE_IMPORT_DESCRIPTOR));
             ImportDesc = *(IMAGE_IMPORT_DESCRIPTOR*)importPtr;
         }
     }
     else {
-        *debugout << "DLL " << dllPath << " has no imports." << "\n";
+        DebugLog("DLL " + dllPath + " has no imports.");
     }
     std::free(pDllfile);
-    *debugout << "Freed memory for DLL: " << dllPath << "\n\n";
+    DebugLog("Freed memory for DLL: " + dllPath);
 }
-
-
 
 void BaseRelocation(PVOID baseAddress, PIMAGE_NT_HEADERS64 pNTHeaders) {
     LONG64 delta = (LONG64)baseAddress - (LONG64)pNTHeaders->OptionalHeader.ImageBase;
 
-    *debugout << "Expected ImageBase: " << std::hex << pNTHeaders->OptionalHeader.ImageBase << "\n";
-    *debugout << "Loaded ImageBase: " << std::hex << baseAddress << "\n";
-    *debugout << "Delta: " << std::hex << delta << "\n";
+    DebugLog("Expected ImageBase: " + std::to_string(pNTHeaders->OptionalHeader.ImageBase));
+    DebugLog("Loaded ImageBase: " + std::to_string((uintptr_t)baseAddress));
+    DebugLog("Delta: " + std::to_string(delta));
 
     PVOID pFirstReloc = (PVOID)((LPBYTE)baseAddress + pNTHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
-    DWORD allRelocSize = pNTHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
-
     IMAGE_BASE_RELOCATION reloc = *(IMAGE_BASE_RELOCATION*)pFirstReloc;
 
-    while (reloc.SizeOfBlock != 0)
-    {
+    while (reloc.SizeOfBlock != 0) {
         int entries = (reloc.SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
-
         WORD* pOffset = (WORD*)((IMAGE_BASE_RELOCATION*)pFirstReloc + 1);
 
-        for (int i = 0; i < entries; i++, pOffset++)
-        {
+        for (int i = 0; i < entries; i++, pOffset++) {
             WORD type = *pOffset >> 12;
             WORD offset = *pOffset & 0x0FFF;
 
-            if (type == IMAGE_REL_BASED_DIR64)
-            {
+            if (type == IMAGE_REL_BASED_DIR64) {
                 LONG64* pAddressToPatch = (LONG64*)((LPBYTE)baseAddress + reloc.VirtualAddress + offset);
                 *pAddressToPatch += delta;
             }
@@ -330,91 +288,75 @@ void BaseRelocation(PVOID baseAddress, PIMAGE_NT_HEADERS64 pNTHeaders) {
     }
 }
 
-
 void RegisterExports(PE_BASE_INFO* dllinfo) {
     DWORD eata = dllinfo->pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
-    *debugout << "Export Address Table Address: " << std::hex << eata << "\n";
+    if (eata == 0) {
+        return;
+    }
     IMAGE_EXPORT_DIRECTORY* ExportDir = (IMAGE_EXPORT_DIRECTORY*)((LPBYTE)dllinfo->baseAddress + eata);
-    *debugout << "NumberOfNames: " << ExportDir->NumberOfNames << "\n";
 
     DWORD* pAddressOfNames = (DWORD*)((LPBYTE)dllinfo->baseAddress + ExportDir->AddressOfNames);
-    *debugout << "pAddressOfNames: " << pAddressOfNames << std::hex << "\n";
-
     DWORD* pAddressOfFunctions = (DWORD*)((LPBYTE)dllinfo->baseAddress + ExportDir->AddressOfFunctions);
-    *debugout << "pAddressOfFunctions: " << pAddressOfFunctions << std::hex << "\n";
-
     WORD* pAddressOfNameOrdinals = (WORD*)((LPBYTE)dllinfo->baseAddress + ExportDir->AddressOfNameOrdinals);
-    *debugout << "pAddressOfNameOrdinals: " << pAddressOfNameOrdinals << std::hex << "\n";
 
     for (DWORD i = 0; i < ExportDir->NumberOfNames; i++) {
         char* funcName = (char*)((LPBYTE)dllinfo->baseAddress + pAddressOfNames[i]);
 
         DWORD functionRVA = pAddressOfFunctions[pAddressOfNameOrdinals[i]];
         PVOID pOriginalAddressOfFunction = (PVOID)((LPBYTE)dllinfo->baseAddress + functionRVA);
-        FARPROC originalFunctionAddress = (FARPROC)(pOriginalAddressOfFunction);
-        *debugout << "Function From RegisterExports. Name: " << funcName << " Address: " << originalFunctionAddress << std::hex << dllinfo->fullpath << "\n";
+        FARPROC originalFunctionAddress = (FARPROC)pOriginalAddressOfFunction;
+        DebugLog("Function From RegisterExports. Name: " + std::string(funcName) + " Address: " + std::to_string((uintptr_t)originalFunctionAddress) + " " + dllinfo->fullpath);
         dllinfo->functions[funcName] = originalFunctionAddress;
     }
 }
 
-
-
 bool runTlsCallback(PE_BASE_INFO* peinfo) {
     const DWORD TlsEntryVirtualAddress = peinfo->pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress;
-    *debugout << "TLS Calback entry: " << TlsEntryVirtualAddress << "\n";
+    DebugLog("TLS Callback entry: " + std::to_string(TlsEntryVirtualAddress));
     if (TlsEntryVirtualAddress == 0) {
         return true;
     }
     const PIMAGE_TLS_DIRECTORY lpImageTLSDirectory = (PIMAGE_TLS_DIRECTORY)((LPBYTE)peinfo->baseAddress + TlsEntryVirtualAddress);
     PIMAGE_TLS_CALLBACK* lpCallbackArray = (PIMAGE_TLS_CALLBACK*)lpImageTLSDirectory->AddressOfCallBacks;
 
-    *debugout << "Address Of CallBacks: " << lpCallbackArray << std::hex << "\n";
-    while (*lpCallbackArray != nullptr)
-    {
+    while (*lpCallbackArray != nullptr) {
         const PIMAGE_TLS_CALLBACK lpImageCallback = *lpCallbackArray;
-        *debugout << "Executing current Calback: " << lpImageCallback << std::hex << "\n";
+        DebugLog("Executing TLS callback: " + std::to_string((uintptr_t)lpImageCallback));
         lpImageCallback(peinfo->baseAddress, DLL_PROCESS_ATTACH, nullptr);
         lpCallbackArray++;
     }
+    return true;
 }
 
-
-
 template<typename FunctionType>
-bool RunDllFunctions(const std::string& functionName, const std::string& dllPath) {
-    auto it = loadedDlls.find(dllPath);
-    if (it == loadedDlls.end()) {
+bool RunDllFunctions(const std::string& functionName, const std::string& dllPath, LoaderContext* context) {
+    auto it = context->loadedDlls.find(dllPath);
+    if (it == context->loadedDlls.end()) {
         std::cerr << "Error: DLL not loaded: " << dllPath << "\n";
         return false;
     }
 
-    PE_BASE_INFO* dllPair = it->second;
-    for (const auto& funcPair : dllPair->functions) {
-        *debugout << "    Function Name: " << funcPair.first << "\n";
-        *debugout << "    Function Address: " << funcPair.second << "\n";
-
-        if (funcPair.first == functionName) {
-            try {
-                PVOID pOriginalAddressOfFunction = funcPair.second;
-                FunctionType func = reinterpret_cast<FunctionType>(pOriginalAddressOfFunction);
-                *debugout << "    Executing function: " << functionName << "\n";
-                func();
-                return true;
-            }
-            catch (const std::exception& e) {
-                std::cerr << "    Error: Exception occurred while executing function " << functionName << ": " << e.what() << "\n";
-            }
-            catch (...) {
-                std::cerr << "    Error: Unknown exception occurred while executing function " << functionName << "\n";
-            }
-            return false;
+    PE_BASE_INFO* dllInfo = it->second.get();
+    auto funcIt = dllInfo->functions.find(functionName);
+    if (funcIt != dllInfo->functions.end()) {
+        try {
+            FunctionType func = (FunctionType)funcIt->second;
+            DebugLog("Executing function: " + functionName);
+            func();
+            return true;
         }
+        catch (const std::exception& e) {
+            std::cerr << "Error: Exception occurred while executing function " << functionName << ": " << e.what() << "\n";
+        }
+        catch (...) {
+            std::cerr << "Error: Unknown exception occurred while executing function " << functionName << "\n";
+        }
+        return false;
     }
 
-    std::cerr << "    Error: Function " << functionName << " not found in DLL " << dllPath << "\n";
+    std::cerr << "Error: Function " << functionName << " not found in DLL " << dllPath << "\n";
     return false;
 }
-
 
 bool RunDllMainFunction(PE_BASE_INFO* dllInfo) {
     if (!dllInfo) {
@@ -422,13 +364,13 @@ bool RunDllMainFunction(PE_BASE_INFO* dllInfo) {
         return false;
     }
 
-    *debugout << "Running main of: " << dllInfo->fullpath << std::endl;
+    DebugLog("Running main of: " + dllInfo->fullpath);
     PVOID baseAddress = dllInfo->baseAddress;
     PIMAGE_NT_HEADERS64 pNtHeaders = dllInfo->pNtHeaders;
 
     PVOID entryPoint = (PVOID)((LPBYTE)baseAddress + pNtHeaders->OptionalHeader.AddressOfEntryPoint);
 
-    *debugout << "Trying to run main dll of: " << dllInfo->fullpath << " on: " << entryPoint << std::endl;
+    DebugLog("Trying to run main dll of: " + dllInfo->fullpath + " on: " + std::to_string((uintptr_t)entryPoint));
 
     if (entryPoint < baseAddress || entryPoint >= (PVOID)((LPBYTE)baseAddress + pNtHeaders->OptionalHeader.SizeOfImage)) {
         std::cerr << "Invalid entry point address: " << entryPoint << std::endl;
@@ -463,79 +405,114 @@ bool RunDllMainFunction(PE_BASE_INFO* dllInfo) {
     return true;
 }
 
-
-
-
-int main(int argc, char* argv[]) {
-
-    bool debug = false;
-    const char* dllFile = nullptr;
-
-
+void parseArguments(int argc, char* argv[], bool& debug, std::string& dllFile) {
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--debug") {
             debug = true;
         }
         else if (std::string(argv[i]) == "--pe") {
-            dllFile = argv[i + 1];
+            if (i + 1 < argc) {
+                dllFile = argv[++i];
+            }
+            else {
+                std::cerr << "Error: Missing argument for --pe\n";
+                exit(1);
+            }
         }
-        else if (!dllFile) {
+        else if (dllFile.empty()) {
             dllFile = argv[i];
         }
     }
+}
 
-    if (!dllFile) {
-        std::cerr << "Usage: " << " --pe <PE path> [--debug]\n";
+void initializeLoaderContext(bool debug) {
+    if (debug) {
+        debugout = &std::cout;
+    }
+    else {
+        debugout = nullptr;
+    }
+}
+
+void loadDll(const std::string& dllFile, LoaderContext* context) {
+    size_t fileSize;
+    PVOID pPefile = readFile(dllFile.c_str(), &fileSize);
+
+    if (pPefile) {
+        DebugLog("Testing directly pe buffer: " + dllFile + " Size: " + std::to_string(fileSize));
+        ResolveDependencies(dllFile, nullptr, false, context);
+    }
+    std::free(pPefile);
+}
+
+void handleLoadedDlls(LoaderContext* context) {
+    std::set<std::string> handledDlls;
+
+    for (const auto& dllPair : context->loadedDlls) {
+        PE_BASE_INFO* dllInfo = dllPair.second.get();
+        if (handledDlls.find(dllInfo->fullpath) != handledDlls.end()) {
+            continue;
+        }
+        handledDlls.insert(dllInfo->fullpath);
+        BaseRelocation(dllInfo->baseAddress, dllInfo->pNtHeaders);
+        FixImports(dllInfo->pNtHeaders, dllInfo->baseAddress, true, context);
+        RegisterExports(dllInfo);
+        runTlsCallback(dllInfo);
+    }
+    handledDlls.clear();
+
+    for (const auto& dllPair : context->loadedDlls) {
+        PE_BASE_INFO* dllInfo = dllPair.second.get();
+        if (handledDlls.find(dllInfo->fullpath) != handledDlls.end()) {
+            continue;
+        }
+        handledDlls.insert(dllInfo->fullpath);
+
+        RunDllMainFunction(dllInfo);
+    }
+    handledDlls.clear();
+
+    for (const auto& dllPair : context->loadedDlls) {
+        PE_BASE_INFO* dllInfo = dllPair.second.get();
+        if (handledDlls.find(dllInfo->fullpath) != handledDlls.end()) {
+            continue;
+        }
+        handledDlls.insert(dllInfo->fullpath);
+
+        FixImports(dllInfo->pNtHeaders, dllInfo->baseAddress, false, context);
+    }
+}
+
+void cleanup(LoaderContext* context) {
+    context->loadedDlls.clear();
+}
+
+
+
+
+int main(int argc, char* argv[]) {
+    bool debug = false;
+    std::string dllFile;
+
+    parseArguments(argc, argv, debug, dllFile);
+
+    if (dllFile.empty()) {
+        std::cerr << "Usage: " << argv[0] << " --pe <PE path> [--debug]\n";
         return 1;
     }
 
+    initializeLoaderContext(debug);
 
-    debugout = debug ? &std::cout : new NullStream();
+    LoaderContext context;
+    loadDll(dllFile, &context);
+    handleLoadedDlls(&context);
 
-    size_t fileSize;
+    // Example usage:
+    // RunDllFunctions<void(*)()>("helloworld", dllFile, &context);
 
-
-    PVOID pPefile = readFile(dllFile, &fileSize);
-
-    *debugout << "Testing directly pe buffer: " << dllFile << " Size: " << fileSize << "\n";
-
-    ResolveDependencies(dllFile, "", nullptr);
-    std::set<std::string> handeledDlls;
-
-    handeledDlls.clear();
-    for (const auto& dllPair : loadedDlls) {
-        if (handeledDlls.find(dllPair.second->fullpath) != handeledDlls.end()) {
-            continue;
-        }
-        handeledDlls.insert(dllPair.second->fullpath);
-        BaseRelocation(dllPair.second->baseAddress, dllPair.second->pNtHeaders);
-        FixImports(dllPair.second->pNtHeaders, dllPair.second->baseAddress, true);
-        RegisterExports(dllPair.second);
-        runTlsCallback(dllPair.second);
-    }
-    handeledDlls.clear();
-
-    for (const auto& dllPair : loadedDlls) {
-        if (handeledDlls.find(dllPair.second->fullpath) != handeledDlls.end()) {
-            continue;
-        }
-        handeledDlls.insert(dllPair.second->fullpath);
-
-        RunDllMainFunction(dllPair.second);
-    }
-    handeledDlls.clear();
-
-    for (const auto& dllPair : loadedDlls) {
-        if (handeledDlls.find(dllPair.second->fullpath) != handeledDlls.end()) {
-            continue;
-        }
-        handeledDlls.insert(dllPair.second->fullpath); 
-
-        FixImports(dllPair.second->pNtHeaders, dllPair.second->baseAddress, false); 
-
-    }
-    // Example usage
-    // RunDllFunctions<void(*)()>("helloworld", dllFile);
+    cleanup(&context);
 
     return 0;
 }
+
+
